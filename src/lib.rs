@@ -1,10 +1,8 @@
 pub mod game;
-pub mod graphics;
-pub mod input;
-pub mod math;
 pub mod player;
 
-use crate::{game::Game, input::*};
+use game::Game;
+use pyxl::input::Input;
 use winit::{
     dpi::PhysicalSize,
     event::*,
@@ -24,12 +22,12 @@ pub async fn run() {
         .build(&event_loop)
         .unwrap();
 
-    let mut game = Game::new(&window).await;
+    let mut game = Game::new(&window).await.unwrap();
+    let mut inp = Input::default();
     let mut previous_time = std::time::Instant::now();
     let mut delta = 1.0 / 60.0;
 
     let mut gilrs = gilrs::Gilrs::new().unwrap();
-    let mut inp = Input::default();
     let mut keyboard_inputs = vec![];
 
     event_loop.run(move |event, _, control_flow| match event {

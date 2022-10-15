@@ -1,10 +1,14 @@
-#![allow(dead_code)]
-
-use crate::{
-    graphics::{sprite::*, DrawParams, DrawQueue, Renderer},
-    {input::*, math::*},
-};
+use crate::player::Player;
 use glam::*;
+use pyxl::{
+    file_system::LoadError,
+    graphics::{
+        pixel_art::{sprite::*, sprite_sheet::*, tilemap::*},
+        DrawParams, DrawQueue, Renderer,
+    },
+    input::*,
+    math::Rect,
+};
 use winit::window::Window;
 
 pub struct Ui {
@@ -16,7 +20,25 @@ pub struct Ui {
     player_heart_half: Sprite,
 }
 
-use crate::player::{self, Player};
+mod boss {
+    use pyxl::graphics::pixel_art::sprite_sheet::SpriteSheet;
+
+    use super::*;
+    pub struct Boss {
+        pub sprites: Sprites,
+    }
+
+    pub struct Sprites {
+        pub awake: Sprite,
+        pub idle_arms_bottom: SpriteSheet,
+        pub idle_arms_top: SpriteSheet,
+        pub idle_body: SpriteSheet,
+        pub idle_head: SpriteSheet,
+        pub sleep: Sprite,
+    }
+}
+
+use boss::Boss;
 
 pub struct Game {
     pub renderer: Renderer,
@@ -24,8 +46,11 @@ pub struct Game {
     pub current_time: f32,
     pub delta_time: f32,
     pub player: Player,
+    pub boss: Boss,
     pub ui: Ui,
     pub environment: Environment,
+    pub tile_map: GPUTileMap,
+    pub level_geometry: LevelGeometry,
 }
 
 pub struct Environment {
@@ -34,107 +59,108 @@ pub struct Environment {
     pub platforms: Sprite,
 }
 
+pub struct LevelGeometry {
+    pub rectangles: Vec<Rect>,
+}
+
 pub const CAMERA_WIDTH: u32 = 427;
 pub const CAMERA_HEIGHT: u32 = 240;
 
 impl Game {
-    pub async fn new(window: &Window) -> Game {
+    pub async fn new(window: &Window) -> Result<Game, LoadError> {
         let mut r = Renderer::new(window, CAMERA_WIDTH, CAMERA_HEIGHT).await;
 
-        let (environment, ui, player_sprites, player_sprite_sheets) = {
-            let environment = Environment {
-                clouds: r
-                    .load_sprite(Origin::TopLeft, "environment/clouds.png")
-                    .unwrap(),
-                moon: r
-                    .load_sprite(Origin::TopLeft, "environment/moon.png")
-                    .unwrap(),
-                platforms: r
-                    .load_sprite(Origin::TopLeft, "environment/platforms.png")
-                    .unwrap(),
-            };
-            let ui = Ui {
-                boss_bar: r.load_sprite(Origin::TopLeft, "ui/boss_bar.png").unwrap(),
-                boss_base: r.load_sprite(Origin::TopLeft, "ui/boss_base.png").unwrap(),
-                player_bar: r.load_sprite(Origin::TopLeft, "ui/player_bar.png").unwrap(),
-                player_base: r
-                    .load_sprite(Origin::TopLeft, "ui/player_base.png")
-                    .unwrap(),
-                player_heart_full: r
-                    .load_sprite(Origin::TopLeft, "ui/player_heart_full.png")
-                    .unwrap(),
-                player_heart_half: r
-                    .load_sprite(Origin::TopLeft, "ui/player_heart_half.png")
-                    .unwrap(),
-            };
-
-            fn player_origin() -> Origin {
-                Origin::Precise(Vec2::new(31.0, 22.0))
-            }
-            let player_sprites = player::Sprites {
-                idle: r.load_sprite(player_origin(), "player/idle.png").unwrap(),
-                jump_fall: r
-                    .load_sprite(player_origin(), "player/jump_fall.png")
-                    .unwrap(),
-                jump_land: r
-                    .load_sprite(player_origin(), "player/jump_land.png")
-                    .unwrap(),
-                jump_rise: r
-                    .load_sprite(player_origin(), "player/jump_rise.png")
-                    .unwrap(),
-                run_start: r
-                    .load_sprite(player_origin(), "player/run_start.png")
-                    .unwrap(),
-            };
-            let player_sprite_sheets = player::SpriteSheets {
-                run: r
-                    .load_sprite_sheet(
-                        Origin::Precise(Vec2::new(31.0, 23.0)),
-                        "player/run.png",
-                        6,
-                        FrameRate::Constant(0.1),
-                        Orientation::Horizontal,
-                    )
-                    .unwrap(),
-            };
-            (environment, ui, player_sprites, player_sprite_sheets)
+        let environment = Environment {
+            clouds: r.load_sprite(Origin::TopLeft, "environment/clouds.png")?,
+            moon: r.load_sprite(Origin::TopLeft, "environment/moon.png")?,
+            platforms: r.load_sprite(Origin::TopLeft, "environment/platforms.png")?,
+        };
+        let ui = Ui {
+            boss_bar: r.load_sprite(Origin::TopLeft, "ui/boss_bar.png")?,
+            boss_base: r.load_sprite(Origin::TopLeft, "ui/boss_base.png")?,
+            player_bar: r.load_sprite(Origin::TopLeft, "ui/player_bar.png")?,
+            player_base: r.load_sprite(Origin::TopLeft, "ui/player_base.png")?,
+            player_heart_full: r.load_sprite(Origin::TopLeft, "ui/player_heart_full.png")?,
+            player_heart_half: r.load_sprite(Origin::TopLeft, "ui/player_heart_half.png")?,
         };
 
-        let player = Player {
-            state: player::State::Idle,
-            sprites: player_sprites,
-            sprite_sheets: player_sprite_sheets,
-            data: player::Data {
-                flipped: false,
-                health: 5,
-                collision_rect: Rectangle {
-                    x: -10.0,
-                    y: -10.0,
-                    w: 20.0,
-                    h: 20.0,
-                },
-                velocity: Vec2::ZERO,
-                position: 100.0 * Vec2::ONE,
-                jump_count: 0,
-                on_ground: false,
-            },
+        let player = Player::new(&mut r)?;
+
+        let sprites = boss::Sprites {
+            awake: r.load_sprite(Origin::BottomMiddle, "twelve_string/awake.png")?,
+            idle_arms_bottom: r.load_sprite_sheet(
+                Origin::TopMiddle,
+                "twelve_string/idle_arms_bottom.png",
+                6,
+                FrameRate::Constant(0.16),
+                Orientation::Horizontal,
+            )?,
+            idle_arms_top: r.load_sprite_sheet(
+                Origin::BottomMiddle,
+                "twelve_string/idle_arms_top.png",
+                6,
+                FrameRate::Constant(0.16),
+                Orientation::Horizontal,
+            )?,
+            idle_head: r.load_sprite_sheet(
+                Origin::Center,
+                "twelve_string/idle_head.png",
+                4,
+                FrameRate::Constant(0.16),
+                Orientation::Horizontal,
+            )?,
+            idle_body: r.load_sprite_sheet(
+                Origin::BottomMiddle,
+                "twelve_string/idle_body.png",
+                4,
+                FrameRate::Constant(0.16),
+                Orientation::Horizontal,
+            )?,
+            sleep: r.load_sprite(Origin::BottomMiddle, "twelve_string/sleep.png")?,
         };
 
-        Self {
+        let boss = Boss { sprites };
+
+        let tile_map = r.load_tilemap("tiles/untitled.tmx")?;
+
+        let level_geometry = LevelGeometry {
+            rectangles: tile_map
+                .tile_layers
+                .get("Inter")
+                .unwrap()
+                .tiles
+                .iter()
+                .map(|Tile { x, y, .. }| Rect {
+                    x: (tile_map.tile_width as i32 * (*x)) as f32,
+                    y: (tile_map.tile_height as i32 * (*y)) as f32,
+                    w: (tile_map.tile_width) as f32,
+                    h: (tile_map.tile_height) as f32,
+                })
+                .collect(),
+        };
+
+        Ok(Self {
             renderer: r,
-            previous_time: 0.0,
-            current_time: 0.0,
-            delta_time: 0.0,
             player,
             ui,
             environment,
-        }
+            boss,
+            tile_map,
+            level_geometry,
+            previous_time: 0.0,
+            current_time: 0.0,
+            delta_time: 0.0,
+        })
     }
 
     pub fn input(&mut self) {}
 
     pub fn update(&mut self, input: &Input, delta: f32) {
-        self.player.update(delta, input);
+        self.renderer.update_camera(
+            self.player.data.position - UVec2::new(CAMERA_WIDTH / 2, CAMERA_HEIGHT / 2).as_vec2(),
+        );
+
+        self.player.update(delta, input, &self.level_geometry);
     }
 
     pub fn draw(&mut self) {
@@ -142,97 +168,117 @@ impl Game {
 
         // DRAW WORLD
         {
-            dq.draw_sprite(
+            dq.sprite(
                 &self.environment.moon,
                 DrawParams::from_pos(Vec2::new(320.0, 59.0)),
             );
-            dq.draw_sprite(&self.environment.clouds, DrawParams::default());
-            dq.draw_sprite(&self.environment.platforms, DrawParams::default());
+            dq.sprite(&self.environment.clouds, DrawParams::default());
+            /*
+            dq.sprite(&self.environment.platforms, DrawParams::default());
+            */
+
+            dq.tile_layer(self.tile_map.tile_layers.get("Inter").unwrap());
         }
 
         // DRAW CHARACTERS
         {
+            // draw twelve string
+            dq.sheet(
+                &self.boss.sprites.idle_body,
+                0,
+                DrawParams {
+                    position: Vec2::new(218.0, 180.0),
+                    flip_x: false,
+                    flip_y: false,
+                    camera_locked: false,
+                },
+            );
+            dq.sheet(
+                &self.boss.sprites.idle_arms_bottom,
+                0,
+                DrawParams {
+                    position: Vec2::new(218.0, 55.0),
+                    flip_x: false,
+                    flip_y: false,
+                    camera_locked: false,
+                },
+            );
+            dq.sheet(
+                &self.boss.sprites.idle_arms_top,
+                0,
+                DrawParams {
+                    position: Vec2::new(218.0, 132.0),
+                    flip_x: false,
+                    flip_y: false,
+                    camera_locked: false,
+                },
+            );
+            dq.sheet(
+                &self.boss.sprites.idle_head,
+                0,
+                DrawParams {
+                    position: Vec2::new(218.0, 82.0),
+                    flip_x: false,
+                    flip_y: false,
+                    camera_locked: false,
+                },
+            );
+
             // draw player
-            let params = DrawParams {
-                position: self.player.data.position,
-                flip_x: self.player.data.flipped,
-                flip_y: false,
-            };
-            match &self.player.state {
-                player::State::Run(state) => match state {
-                    player::RunState::Sprint => {
-                        dq.draw_sprite_sheet(&self.player.sprite_sheets.run, params);
-                    }
-                    player::RunState::Start => {
-                        dq.draw_sprite(&self.player.sprites.run_start, params);
-                    }
-                },
-                player::State::Idle => {
-                    dq.draw_sprite(&self.player.sprites.idle, params);
-                }
-                player::State::Jumping(state) => match state {
-                    player::JumpState::Rise => {
-                        dq.draw_sprite(&self.player.sprites.jump_rise, params);
-                    }
-                    player::JumpState::Land => {
-                        dq.draw_sprite(&self.player.sprites.jump_land, params);
-                    }
-                    player::JumpState::Fall => {
-                        dq.draw_sprite(&self.player.sprites.jump_fall, params);
-                    }
-                },
-            };
+            dq.append(self.player.draw());
         }
 
         // DRAW UI
         {
             let player_base_x = 13.0;
             let player_base_y = 11.0;
-            dq.draw_sprite(
+            dq.sprite(
                 &self.ui.player_base,
-                DrawParams::from_pos(Vec2::new(player_base_x, player_base_y)),
+                DrawParams::from_pos(Vec2::new(player_base_x, player_base_y)).ui(true),
             );
             let heart_x = 11.0 + player_base_x;
             let heart_y = 19.0 + player_base_y;
             let heart_spacing = 21.0;
             for i in 0..self.player.data.health / 2 {
-                dq.draw_sprite(
+                dq.sprite(
                     &self.ui.player_heart_full,
-                    DrawParams::from_pos(Vec2::new(heart_x + heart_spacing * (i as f32), heart_y)),
+                    DrawParams::from_pos(Vec2::new(heart_x + heart_spacing * (i as f32), heart_y))
+                        .ui(true),
                 );
             }
             if self.player.data.health % 2 == 1 {
                 let x = heart_x + heart_spacing * (self.player.data.health / 2) as f32;
-                dq.draw_sprite(
+                dq.sprite(
                     &self.ui.player_heart_half,
-                    DrawParams::from_pos(Vec2::new(x, heart_y)),
+                    DrawParams::from_pos(Vec2::new(x, heart_y)).ui(true),
                 );
             }
 
             //draw bar, whatever it represents
             for i in 0..69 {
-                dq.draw_sprite(
+                dq.sprite(
                     &self.ui.player_bar,
                     DrawParams::from_pos(Vec2::new(
                         i as f32 + player_base_x + 4.0,
                         player_base_y + 4.0,
-                    )),
+                    ))
+                    .ui(true),
                 );
             }
             let boss_bar_x = 78.0;
             let boss_bar_y = 211.0;
-            dq.draw_sprite(
+            dq.sprite(
                 &self.ui.boss_base,
-                DrawParams::from_pos(Vec2::new(boss_bar_x, boss_bar_y)),
+                DrawParams::from_pos(Vec2::new(boss_bar_x, boss_bar_y)).ui(true),
             );
-            //224
             for i in 0..224 {
-                dq.draw_sprite(
+                dq.sprite(
                     &self.ui.boss_bar,
                     DrawParams::from_pos(Vec2::new(
                         i as f32 + boss_bar_x + 26.0,
                         boss_bar_y + 11.0,
-                    )),
+                    ))
+                    .ui(true),
                 );
             }
         }
