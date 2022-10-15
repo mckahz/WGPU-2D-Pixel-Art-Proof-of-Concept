@@ -14,6 +14,51 @@ use pyxl::{
 
 use crate::game::LevelGeometry;
 
+pub struct AnimationTime {
+    t: f32,
+    frame: u8,
+    current_frame_duration: f32,
+    frame_rate: FrameRate,
+    max: u8,
+}
+
+impl AnimationTime {
+    pub fn current_frame_duration(&self) -> f32 {
+        match &self.frame_rate {
+            FrameRate::Constant(frame_duration) => *frame_duration,
+            FrameRate::Variable(frame_durations) => frame_durations[self.frame as usize],
+            FrameRate::None => 0.0,
+        }
+    }
+
+    pub fn new(sprite_sheet: &SpriteSheet) -> Self {
+        let mut inst = Self {
+            t: 0.0,
+            frame: 0,
+            frame_rate: sprite_sheet.frame_rate.clone(),
+            current_frame_duration: 0.0,
+            max: sprite_sheet.count,
+        };
+        inst.current_frame_duration = inst.current_frame_duration();
+        inst
+    }
+
+    //TODO: make this return u8, or make SpriteSheet.count a u32
+    pub fn frame(&self) -> u32 {
+        self.frame as u32
+    }
+
+    pub fn advance(&mut self, delta: f32) {
+        self.t += delta;
+
+        let cfd = self.current_frame_duration();
+        if self.t > cfd {
+            self.t %= cfd;
+            self.frame = (self.frame + 1) % self.max;
+        }
+    }
+}
+
 pub struct Sprites {
     pub idle: Sprite,
     pub jump_fall: Sprite,
@@ -33,26 +78,6 @@ pub struct Sprites {
     pub attack_climb_down: SpriteSheet,
     pub attack_climb_up: SpriteSheet,
     pub slash: SpriteSheet,
-}
-
-impl Sprites {
-    pub fn update_attack_animations(&mut self, attack_state: &AttackState) {
-        let frame = 1.0 - (attack_state.time / ATTACK_DURATION);
-        for anim in [
-            &mut self.attack_run_down_poncho,
-            &mut self.attack_run_down_sword,
-            &mut self.attack_run_up_poncho,
-            &mut self.attack_run_up_sword,
-            &mut self.attack_stand_down,
-            &mut self.attack_stand_up,
-            &mut self.attack_climb_down,
-            &mut self.attack_climb_up,
-            &mut self.slash,
-        ] {
-            //anim.scrub_norm(frame);
-        }
-        //self.attack_run_feet.scrub(self.run.t);
-    }
 }
 
 #[derive(Debug)]
@@ -208,10 +233,13 @@ impl Player {
             )?,
         };
 
+        let run_t = AnimationTime::new(&sprites.run);
+
         Ok(Self {
             state: State::Idle(IdleState::Standing),
             sprites,
             data: Data {
+                run_t,
                 flipped: false,
                 health: 5,
                 collision_rect: Rectangle {
@@ -238,6 +266,8 @@ impl Player {
     }
 
     pub fn update(&mut self, delta: f32, input: &Input, level_geometry: &LevelGeometry) {
+        self.data.run_t.advance(delta);
+
         let left_pressed = input.left.pressed;
         let right_pressed = input.right.pressed;
         self.data.direction = if !left_pressed && right_pressed {
@@ -292,7 +322,6 @@ impl Player {
                 self.data.v_collide(delta, &level_geometry);
                 self.data.h_collide(delta, &level_geometry);
                 self.data.update_pos(delta);
-                self.sprites.update_attack_animations(attack_state);
             }
             State::AttackRun(ref mut attack_state) => {
                 attack_state.advance(delta);
@@ -301,7 +330,6 @@ impl Player {
                 self.data.h_collide(delta, &level_geometry);
                 self.data.update_pos(delta);
                 //self.sprites.run.advance(delta);
-                self.sprites.update_attack_animations(attack_state);
             }
             State::AttackJump(ref mut attack_state) => {
                 attack_state.advance(delta);
@@ -315,7 +343,6 @@ impl Player {
                 self.data.v_collide(delta, &level_geometry);
                 self.data.h_collide(delta, &level_geometry);
                 self.data.update_pos(delta);
-                self.sprites.update_attack_animations(attack_state);
             }
         };
 
@@ -460,7 +487,7 @@ impl Player {
                     dq.sprite(&self.sprites.run_start, params);
                 }
                 RunState::Sprint => {
-                    dq.sheet(&self.sprites.run, 0, params);
+                    dq.sheet(&self.sprites.run, self.data.run_t.frame(), params);
                 }
             },
             State::AttackIdle(_attack_state) => {
@@ -490,6 +517,7 @@ const ATTACK_FALL_SPEED: f32 = 50.0;
 const ATTACK_AIR_MOVE_SPEED: f32 = 50.0;
 
 pub struct Data {
+    pub run_t: AnimationTime,
     pub health: i8,
     pub collision_rect: Rect,
     pub queued_attack: bool,
@@ -530,6 +558,7 @@ impl Data {
     pub fn apply_gravity(&mut self, delta: f32) {
         self.velocity.y += GRAVITY * delta;
     }
+
     pub fn jump_test(&mut self, input: &Input) {
         if
         /*self.jump_count > 0 &&*/
@@ -539,6 +568,7 @@ impl Data {
             self.on_ground = false;
         }
     }
+
     pub fn update_pos(&mut self, delta: f32) {
         self.position += self.velocity * delta;
     }

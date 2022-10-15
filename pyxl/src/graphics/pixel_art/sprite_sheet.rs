@@ -19,7 +19,7 @@ impl Orientation {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum FrameRate {
     Constant(f32),
     Variable(Vec<f32>),
