@@ -14,51 +14,6 @@ use pyxl::{
 
 use crate::game::LevelGeometry;
 
-pub struct AnimationTime {
-    t: f32,
-    frame: u8,
-    current_frame_duration: f32,
-    frame_rate: FrameRate,
-    max: u8,
-}
-
-impl AnimationTime {
-    pub fn current_frame_duration(&self) -> f32 {
-        match &self.frame_rate {
-            FrameRate::Constant(frame_duration) => *frame_duration,
-            FrameRate::Variable(frame_durations) => frame_durations[self.frame as usize],
-            FrameRate::None => 0.0,
-        }
-    }
-
-    pub fn new(sprite_sheet: &SpriteSheet) -> Self {
-        let mut inst = Self {
-            t: 0.0,
-            frame: 0,
-            frame_rate: sprite_sheet.frame_rate.clone(),
-            current_frame_duration: 0.0,
-            max: sprite_sheet.count,
-        };
-        inst.current_frame_duration = inst.current_frame_duration();
-        inst
-    }
-
-    //TODO: make this return u8, or make SpriteSheet.count a u32
-    pub fn frame(&self) -> u32 {
-        self.frame as u32
-    }
-
-    pub fn advance(&mut self, delta: f32) {
-        self.t += delta;
-
-        let cfd = self.current_frame_duration();
-        if self.t > cfd {
-            self.t %= cfd;
-            self.frame = (self.frame + 1) % self.max;
-        }
-    }
-}
-
 pub struct Sprites {
     pub idle: Sprite,
     pub jump_fall: Sprite,
@@ -79,81 +34,68 @@ pub struct Sprites {
     pub attack_climb_up: SpriteSheet,
     pub slash: SpriteSheet,
 }
-
-#[derive(Debug)]
-pub enum JumpState {
-    Rise,
-    Fall,
-}
-
-#[derive(Debug)]
-pub enum RunState {
-    Start,
-    Sprint,
-}
-
-#[derive(Debug)]
-pub enum IdleState {
-    Landing(f32),
-    Crouching,
-    Standing,
-}
-
-#[derive(Debug)]
-pub struct AttackState {
-    pub time: f32,
-    pub stage: AttackStage,
-}
-
-#[derive(Debug)]
-pub enum State {
-    Idle(IdleState),
-    Jump(JumpState),
-    Run(RunState),
-    AttackIdle(AttackState),
-    AttackRun(AttackState),
-    AttackJump(AttackState),
-}
-
-impl AttackState {
-    pub fn advance(&mut self, delta: f32) {
-        self.time -= delta;
-        if self.time < 0.0 {
-            self.stage = match self.stage {
-                AttackStage::Up => AttackStage::Finish,
-                _ => AttackStage::Finish,
-            };
-            self.time = ATTACK_DURATION;
-        }
-    }
-}
-
-#[derive(PartialEq, Eq, Debug)]
-pub enum AttackStage {
-    Up,
-    Down,
-    Finish,
-}
-
 pub struct Player {
     pub state: State,
+
     pub sprites: Sprites,
-    pub data: Data,
+    pub run_t: AnimationTime,
+
+    pub health: i8,
+
+    pub collision_rect: Rect,
+
+    pub velocity: Vec2,
+    pub position: Vec2,
+
+    pub jump_count: i8,
+    pub off_ground_timer: f32,
+    pub on_ground_timer: f32,
+
+    pub flipped: bool,
+    pub direction: f32,
+    pub hurtbox: Rect,
+
+    pub top_of_ladder: bool,
+}
+
+const GROUND_HEIGHT: f32 = 208 as f32;
+const LAND_TIME: f32 = 0.100;
+const H_SPEED: f32 = 200.0;
+const GRAVITY: f32 = 2000.0;
+const MAX_JUMPS: i8 = 2;
+const JUMP_SPEED: f32 = 500.0;
+const ATTACK_DURATION: f32 = 0.2;
+const ATTACK_FALL_SPEED: f32 = 50.0;
+const ATTACK_AIR_MOVE_SPEED: f32 = 50.0;
+const BOUNCE_TIME: f32 = 0.15;
+const CLIMB_SPEED: f32 = 150.0;
+const CLIMB_END_DISTANCE: f32 = 14.0;
+const CLIMB_FLIP_DISTANCE: f32 = 24.0;
+
+#[derive(PartialEq)]
+pub enum State {
+    Land(f32),
+    Idle,
+    RunStart,
+    Run,
+    Jump,
+    Attack,
+    Climb,
 }
 
 impl Player {
     pub fn new(r: &mut Renderer) -> Result<Self, LoadError> {
-        fn player_origin() -> Origin {
+        fn origin() -> Origin {
             Origin::Precise(Vec2::new(31.0, 22.0))
         }
         let sprites = Sprites {
-            idle: r.load_sprite(player_origin(), "player/idle.png")?,
-            jump_fall: r.load_sprite(player_origin(), "player/jump_fall.png")?,
-            jump_land: r.load_sprite(player_origin(), "player/jump_land.png")?,
-            jump_rise: r.load_sprite(player_origin(), "player/jump_rise.png")?,
-            run_start: r.load_sprite(player_origin(), "player/run_start.png")?,
-            climb: r.load_sprite(player_origin(), "player/climb.png")?,
-            climb_end: r.load_sprite(player_origin(), "player/climb_end.png")?,
+            idle: r.load_sprite(origin(), "player/idle.png")?,
+            jump_fall: r.load_sprite(origin(), "player/jump_fall.png")?,
+            jump_land: r.load_sprite(origin(), "player/jump_land.png")?,
+            jump_rise: r.load_sprite(origin(), "player/jump_rise.png")?,
+            run_start: r.load_sprite(origin(), "player/run_start.png")?,
+            climb: r.load_sprite(Origin::BottomMiddle, "player/climb.png")?,
+            climb_end: r.load_sprite(Origin::BottomMiddle, "player/climb_end.png")?,
             run: r.load_sprite_sheet(
                 Origin::Precise(Vec2::new(31.0, 23.0)),
                 "player/run.png",
@@ -235,394 +177,264 @@ impl Player {
 
         let run_t = AnimationTime::new(&sprites.run);
 
+        let rect_width = 6.0;
+        let rect_height = 10.0;
+
         Ok(Self {
-            state: State::Idle(IdleState::Standing),
+            state: State::Idle,
             sprites,
-            data: Data {
-                run_t,
-                flipped: false,
-                health: 5,
-                collision_rect: Rectangle {
-                    x: -10.0,
-                    y: -20.0,
-                    w: 20.0,
-                    h: 20.0,
-                },
-                velocity: Vec2::ZERO,
-                position: 100.0 * Vec2::ONE,
-                jump_count: 0,
-                on_ground: false,
-                direction: 0.0,
-                queued_attack: false,
-                attack_cooldown: 0.0,
-                hurtbox: Rect {
-                    x: -10.0,
-                    y: -10.0,
-                    w: 20.0,
-                    h: 20.0,
-                },
+            run_t,
+            flipped: false,
+            health: 5,
+            collision_rect: Rectangle {
+                x: -rect_width / 2.0,
+                y: -rect_height,
+                w: rect_width,
+                h: rect_height,
             },
+            velocity: Vec2::ZERO,
+            position: 100.0 * Vec2::ONE,
+            jump_count: 0,
+            off_ground_timer: 0.0,
+            on_ground_timer: 0.0,
+            direction: 0.0,
+            hurtbox: Rect {
+                x: -10.0,
+                y: -10.0,
+                w: 20.0,
+                h: 20.0,
+            },
+            top_of_ladder: false,
         })
     }
 
-    pub fn update(&mut self, delta: f32, input: &Input, level_geometry: &LevelGeometry) {
-        self.data.run_t.advance(delta);
+    fn set_velocity_and_flip(&mut self, input: &Input) {
+        self.direction = (if input.right.pressed { 1 } else { 0 }
+            - if input.left.pressed { 1 } else { 0 }) as f32;
 
-        let left_pressed = input.left.pressed;
-        let right_pressed = input.right.pressed;
-        self.data.direction = if !left_pressed && right_pressed {
-            1
-        } else if left_pressed && !right_pressed {
-            -1
-        } else {
-            0
-        } as f32;
-
-        // update the player / state
-        match &mut self.state {
-            State::Idle(ref mut idle_state) => {
-                match idle_state {
-                    IdleState::Landing(ref mut time) => {
-                        *time -= delta;
-                    }
-                    _ => {}
-                }
-                self.data.v_collide(delta, &level_geometry);
-                self.data.jump_test(input);
-                self.data.attack_test(delta, input);
-            }
-            State::Jump(_) => {
-                self.data.apply_gravity(delta);
-                self.data.attack_test(delta, input);
-                self.data.update_velocity();
-
-                self.data.v_collide(delta, &level_geometry);
-                self.data.h_collide(delta, &level_geometry);
-                self.data.update_pos(delta);
-
-                self.data.jump_test(input);
-            }
-            State::Run(_) => {
-                self.data.apply_gravity(delta);
-                self.data.attack_test(delta, input);
-                self.data.update_velocity();
-
-                self.data.v_collide(delta, &level_geometry);
-                self.data.h_collide(delta, &level_geometry);
-                self.data.update_pos(delta);
-
-                self.data.jump_test(input);
-
-                //self.sprites.run.advance(delta);
-            }
-            State::AttackIdle(ref mut attack_state) => {
-                attack_state.advance(delta);
-                self.data.apply_gravity(delta);
-                self.data.velocity.x = 80.0 * self.data.direction;
-                self.data.v_collide(delta, &level_geometry);
-                self.data.h_collide(delta, &level_geometry);
-                self.data.update_pos(delta);
-            }
-            State::AttackRun(ref mut attack_state) => {
-                attack_state.advance(delta);
-                self.data.apply_gravity(delta);
-                self.data.v_collide(delta, &level_geometry);
-                self.data.h_collide(delta, &level_geometry);
-                self.data.update_pos(delta);
-                //self.sprites.run.advance(delta);
-            }
-            State::AttackJump(ref mut attack_state) => {
-                attack_state.advance(delta);
-                self.data.apply_gravity(delta);
-                /*
-                self.data.velocity = Vec2::new(
-                    self.data.direction * ATTACK_AIR_MOVE_SPEED,
-                    ATTACK_FALL_SPEED,
-                );
-                */
-                self.data.v_collide(delta, &level_geometry);
-                self.data.h_collide(delta, &level_geometry);
-                self.data.update_pos(delta);
-            }
-        };
-
-        // Check for state changes
-        loop {
-            match &mut self.state {
-                State::Idle(ref mut idle_state) => {
-                    match idle_state {
-                        IdleState::Landing(time) => {
-                            *idle_state = if *time < 0.0 {
-                                IdleState::Standing
-                            } else {
-                                IdleState::Landing(*time)
-                            };
-                        }
-                        IdleState::Crouching => {
-                            if !input.down.pressed {
-                                *idle_state = IdleState::Standing;
-                            }
-                        }
-                        IdleState::Standing => {
-                            if input.down.pressed {
-                                *idle_state = IdleState::Crouching;
-                            }
-                        }
-                    }
-
-                    if !self.data.on_ground {
-                        self.state = State::Jump(JumpState::Fall);
-                    } else if input.jump.just_pressed() {
-                        self.state = State::Jump(JumpState::Rise);
-                    } else if self.data.queued_attack {
-                        self.data.queued_attack = false;
-                        self.state = State::AttackIdle(AttackState {
-                            time: ATTACK_DURATION,
-                            stage: AttackStage::Up,
-                        });
-                    } else if self.data.direction != 0.0 {
-                        self.state = State::Run(RunState::Start);
-                    }
-                }
-                State::Jump(ref mut jump_state) => {
-                    if self.data.on_ground {
-                        self.state = State::Idle(if self.data.velocity.x.abs() < 0.1 {
-                            IdleState::Landing(LAND_TIME)
-                        } else {
-                            IdleState::Standing
-                        });
-                    } else if self.data.queued_attack {
-                        self.data.queued_attack = false;
-                        self.state = State::AttackJump(AttackState {
-                            time: ATTACK_DURATION,
-                            stage: AttackStage::Up,
-                        });
-                    } else if self.data.velocity.y > 0.0 {
-                        *jump_state = JumpState::Fall;
-                    } else if self.data.velocity.y < 0.0 {
-                        *jump_state = JumpState::Rise;
-                    }
-                }
-                State::Run(ref mut run_state) => {
-                    if !self.data.on_ground {
-                        self.state = State::Jump(JumpState::Rise);
-                    } else {
-                        match run_state {
-                            RunState::Start => {
-                                if self.data.velocity.x.abs() >= H_SPEED * 0.5 {
-                                    *run_state = RunState::Sprint;
-                                }
-                            }
-                            RunState::Sprint => {
-                                if self.data.velocity.x.abs() < 0.3 {
-                                    self.state = State::Idle(IdleState::Standing);
-                                }
-                            }
-                        }
-                        if self.data.queued_attack {
-                            self.data.queued_attack = false;
-                            self.state = State::AttackRun(AttackState {
-                                time: ATTACK_DURATION,
-                                stage: AttackStage::Up,
-                            });
-                        }
-                    }
-                }
-                State::AttackIdle(ref mut attack_state) => {
-                    if attack_state.stage == AttackStage::Finish {
-                        self.state = State::Idle(IdleState::Standing);
-                    }
-                }
-                State::AttackRun(ref mut attack_state) => {
-                    if attack_state.stage == AttackStage::Finish {
-                        self.state = State::Run(RunState::Sprint);
-                    }
-                }
-                State::AttackJump(ref mut attack_state) => {
-                    if attack_state.stage == AttackStage::Finish {
-                        self.state = State::Jump(JumpState::Fall);
-                    }
-                }
-            }
-            break;
+        self.velocity.x = self.direction * H_SPEED;
+        if self.velocity.x < 0.0 {
+            self.flipped = true;
+        } else if self.velocity.x > 0.0 {
+            self.flipped = false;
         }
-
-        // flipping logic
-        self.data.flipped = if self.data.velocity.x > 0.0 {
-            false
-        } else if self.data.velocity.x < 0.0 {
-            true
-        } else {
-            self.data.flipped
-        };
     }
 
-    pub fn draw(&self) -> DrawQueue {
-        let mut dq = DrawQueue::new();
-        let params = DrawParams {
-            position: self.data.position,
-            flip_x: self.data.flipped,
-            flip_y: false,
-            camera_locked: false,
-        };
-        match &self.state {
-            State::Idle(idle_state) => match idle_state {
-                IdleState::Landing(_) | IdleState::Crouching => {
-                    dq.sprite(&self.sprites.jump_land, params);
-                }
-                IdleState::Standing => {
-                    dq.sprite(&self.sprites.idle, params);
-                }
-            },
-            State::Jump(jump_state) => match jump_state {
-                JumpState::Rise => {
-                    dq.sprite(&self.sprites.jump_rise, params);
-                }
-                JumpState::Fall => {
-                    dq.sprite(&self.sprites.jump_fall, params);
-                }
-            },
-            State::Run(run_state) => match run_state {
-                RunState::Start => {
-                    dq.sprite(&self.sprites.run_start, params);
-                }
-                RunState::Sprint => {
-                    dq.sheet(&self.sprites.run, self.data.run_t.frame(), params);
-                }
-            },
-            State::AttackIdle(_attack_state) => {
-                dq.sheet(&self.sprites.attack_stand_up, 0, params);
-            }
-            State::AttackRun(_attack_state) => {
-                dq.sheet(&self.sprites.attack_run_up_sword, 0, params);
-                dq.sheet(&self.sprites.attack_run_up_poncho, 0, params);
-                dq.sheet(&self.sprites.attack_run_feet, 0, params);
-            }
-            State::AttackJump(_attack_state) => {
-                dq.sheet(&self.sprites.attack_climb_up, 0, params);
-            }
-        }
-        dq
-    }
-}
-
-const GROUND_HEIGHT: f32 = 208 as f32;
-const LAND_TIME: f32 = 0.100;
-const H_SPEED: f32 = 200.0;
-const GRAVITY: f32 = 2000.0;
-const MAX_JUMPS: i8 = 2;
-const JUMP_SPEED: f32 = 500.0;
-const ATTACK_DURATION: f32 = 0.2;
-const ATTACK_FALL_SPEED: f32 = 50.0;
-const ATTACK_AIR_MOVE_SPEED: f32 = 50.0;
-
-pub struct Data {
-    pub run_t: AnimationTime,
-    pub health: i8,
-    pub collision_rect: Rect,
-    pub queued_attack: bool,
-    pub attack_cooldown: f32,
-    pub velocity: Vec2,
-    pub position: Vec2,
-    pub jump_count: i8,
-    pub on_ground: bool,
-    pub flipped: bool,
-    pub direction: f32,
-    pub hurtbox: Rect,
-}
-
-impl Data {
-    /// Attack test is to check whether or not we should begin attacking
-    /// during the update phase.
-    pub fn attack_test(&mut self, delta: f32, input: &Input) {
-        // deal with attack stuff, if we are attacking
-        if input.attack.just_pressed() {
-            self.queued_attack = true;
-        } // now attack state is definitely None
-        if self.attack_cooldown > 0.0 {
-            self.attack_cooldown -= delta;
-        }
-        self.queued_attack = self.queued_attack && self.attack_cooldown <= 0.0;
-    }
-
-    pub fn update_velocity(&mut self) {
-        if self.direction == 0.0 {
-            self.velocity.x *= 0.3
-        } else if self.direction.signum() == self.velocity.x.signum() {
-            self.velocity.x += (self.direction * H_SPEED - self.velocity.x) * 0.5
-        } else {
-            self.velocity.x += (self.direction * H_SPEED - self.velocity.x) * 0.7
-        };
-    }
-
-    pub fn apply_gravity(&mut self, delta: f32) {
+    fn gravity(&mut self, delta: f32) {
         self.velocity.y += GRAVITY * delta;
     }
 
-    pub fn jump_test(&mut self, input: &Input) {
-        if
-        /*self.jump_count > 0 &&*/
-        input.jump.just_pressed() {
-            self.velocity.y = -JUMP_SPEED;
-            self.jump_count -= 1;
-            self.on_ground = false;
-        }
-    }
-
-    pub fn update_pos(&mut self, delta: f32) {
-        self.position += self.velocity * delta;
-    }
-
-    fn collision(rect: &Rect, level_geometry: &LevelGeometry) -> bool {
-        level_geometry.rectangles.iter().any(|r| r.contains(rect))
-    }
-
-    pub fn v_collide(&mut self, delta: f32, level_geometry: &LevelGeometry) {
-        if Self::collision(
-            &self
-                .collision_rect
-                .translate(self.position + Vec2::new(0.0, self.velocity.y * delta)),
-            level_geometry,
-        ) {
-            self.position.y = if self.velocity.y > 0.0 {
-                self.on_ground = true;
-                self.position.y.floor()
-            } else {
-                self.position.y.ceil()
-            };
-            while !Self::collision(
-                &self
-                    .collision_rect
-                    .translate(self.position + Vec2::new(0.0, self.velocity.y.signum())),
-                level_geometry,
-            ) {
-                self.position.y += self.velocity.y.signum();
+    fn jump(&mut self, input: &Input) {
+        if input.jump.just_pressed() {
+            if self.on_ground() {
+                self.velocity.y = -JUMP_SPEED;
+            } else if self.state == State::Climb {
+                self.state = State::Jump;
+                self.velocity.y = -JUMP_SPEED;
             }
-            self.velocity.y = 0.0;
         }
     }
 
-    pub fn h_collide(&mut self, delta: f32, level_geometry: &LevelGeometry) {
-        if Self::collision(
-            &self
-                .collision_rect
-                .translate(self.position + Vec2::new(self.velocity.x * delta, 0.0)),
-            level_geometry,
-        ) {
-            self.position.x = if self.velocity.x > 0.0 {
-                self.position.x.floor()
-            } else {
-                self.position.x.ceil()
-            };
-            while !Self::collision(
-                &self
-                    .collision_rect
-                    .translate(self.position + Vec2::new(self.velocity.x.signum(), 0.0)),
-                level_geometry,
-            ) {
+    fn climb(&mut self, input: &Input, level_geometry: &LevelGeometry) {
+        let global_rect = self.global_rect();
+        let ladder_below = level_geometry.ladder_colliding(global_rect.translate_y(1.0));
+        let in_ladder = level_geometry.ladder_colliding(global_rect);
+        let mut snap_to_ladder = || {
+            self.position.x = (self.position.x / 16.0).floor() * 16.0 + 8.0;
+            self.velocity.x = 0.0;
+            self.state = State::Climb;
+        };
+        if in_ladder && input.up.pressed {
+            snap_to_ladder();
+            self.position.y -= 1.0;
+        }
+        if ladder_below
+            && input.down.pressed
+            && !level_geometry.colliding(global_rect.translate_y(1.0))
+        {
+            snap_to_ladder();
+            self.position.y += 1.0;
+        }
+    }
+
+    fn move_and_collide(&mut self, delta: f32, level_geometry: &LevelGeometry) {
+        if level_geometry.colliding(self.global_rect().translate_x(self.velocity.x * delta)) {
+            self.position.x = self.position.x.floor();
+            while !level_geometry
+                .colliding(self.global_rect().translate_x(self.velocity.x.signum()))
+            {
                 self.position.x += self.velocity.x.signum();
             }
             self.velocity.x = 0.0;
         }
+        self.position.x += self.velocity.x * delta;
+
+        if level_geometry.colliding(self.global_rect().translate_y(self.velocity.y * delta)) {
+            self.position.y = self.position.y.floor();
+
+            while !level_geometry
+                .colliding(self.global_rect().translate_y(self.velocity.y.signum()))
+            {
+                self.position.y += self.velocity.y.signum();
+            }
+            self.velocity.y = 0.0;
+        }
+        if self.velocity.y > 0.0
+            && !level_geometry.top_ladder_colliding(self.global_rect())
+            && level_geometry
+                .top_ladder_colliding(self.global_rect().translate_y(self.velocity.y * delta))
+        {
+            self.position.y = self.position.y.floor();
+
+            while !level_geometry.top_ladder_colliding(self.global_rect().translate_y(1.0)) {
+                self.position.y += 1.0;
+            }
+            self.velocity.y = 0.0;
+        }
+        self.position.y += self.velocity.y * delta;
+
+        if level_geometry.colliding(self.global_rect().translate_y(1.0))
+            || (!level_geometry.top_ladder_colliding(self.global_rect())
+                && level_geometry.top_ladder_colliding(self.global_rect().translate_y(1.0)))
+        {
+            self.off_ground_timer = 0.0;
+            self.on_ground_timer = f32::min(self.on_ground_timer + delta, BOUNCE_TIME);
+        } else {
+            self.off_ground_timer += delta;
+            self.on_ground_timer = 0.0;
+        }
+    }
+
+    pub fn update(&mut self, delta: f32, input: &Input, level_geometry: &LevelGeometry) {
+        match &mut self.state {
+            State::Idle => {
+                if self.velocity.x != 0.0 {
+                    self.state = State::RunStart;
+                }
+                if !self.on_ground() {
+                    self.state = State::Jump;
+                }
+                self.set_velocity_and_flip(input);
+                self.climb(input, level_geometry);
+                self.jump(input);
+                self.gravity(delta);
+            }
+            State::Land(ref mut bounce_time) => {
+                *bounce_time -= delta;
+                if self.velocity.x != 0.0 {
+                    self.state = State::RunStart;
+                } else if *bounce_time <= 0.0 {
+                    self.state = State::Idle;
+                }
+                if !self.on_ground() {
+                    self.state = State::Jump;
+                }
+                self.set_velocity_and_flip(input);
+                self.climb(input, level_geometry);
+                self.jump(input);
+                self.gravity(delta);
+            }
+            State::RunStart => {
+                if self.velocity.x.abs() == H_SPEED {
+                    self.state = State::Run;
+                }
+                if !self.on_ground() {
+                    self.state = State::Jump;
+                }
+                self.set_velocity_and_flip(input);
+                self.climb(input, level_geometry);
+                self.jump(input);
+                self.gravity(delta);
+            }
+            State::Run => {
+                self.set_velocity_and_flip(input);
+                self.climb(input, level_geometry);
+                if self.velocity.x == 0.0 {
+                    self.state = State::Idle;
+                }
+                if !self.on_ground() {
+                    self.state = State::Jump;
+                }
+                self.jump(input);
+                self.gravity(delta);
+            }
+            State::Jump => {
+                self.set_velocity_and_flip(input);
+                self.climb(input, level_geometry);
+                if self.on_ground() {
+                    self.state = State::Land(BOUNCE_TIME);
+                }
+                self.jump(input);
+                self.gravity(delta);
+            }
+            State::Attack => todo!(),
+            State::Climb => {
+                let climb_direction = (if input.down.pressed { 1 } else { 0 }
+                    - if input.up.pressed { 1 } else { 0 })
+                    as f32;
+                self.velocity.y = climb_direction * CLIMB_SPEED;
+
+                if !level_geometry.ladder_colliding(self.global_rect()) {
+                    self.velocity.y = 0.0;
+                    self.state = State::Idle;
+                    self.position.y = ((self.position.y / 16.0).floor() + 1.0) * 16.0;
+                }
+                self.top_of_ladder = !level_geometry
+                    .ladder_colliding(self.global_rect().translate_y(-CLIMB_END_DISTANCE));
+                if level_geometry.colliding(self.global_rect().translate_y(1.0))
+                    && climb_direction == 1.0
+                {
+                    self.state = State::Idle;
+                }
+
+                self.jump(input);
+            }
+        }
+
+        self.move_and_collide(delta, level_geometry);
+        self.run_t.advance(delta);
+    }
+
+    pub fn draw(&self) -> DrawQueue {
+        let mut dq = DrawQueue::new();
+        let mut params = DrawParams {
+            position: self.position,
+            flip_x: self.flipped,
+            flip_y: false,
+            camera_locked: false,
+        };
+
+        match &self.state {
+            State::Land(_) => dq.sprite(&self.sprites.jump_land, params),
+            State::Idle => dq.sprite(&self.sprites.idle, params),
+            State::RunStart => dq.sprite(&self.sprites.run_start, params),
+            State::Run => dq.sheet(&self.sprites.run, self.run_t.frame(), params),
+            State::Jump => {
+                if self.velocity.y <= 0.0 {
+                    dq.sprite(&self.sprites.jump_rise, params);
+                } else {
+                    dq.sprite(&self.sprites.jump_fall, params);
+                }
+            }
+            State::Attack => todo!(),
+            State::Climb => {
+                params.flip_x = (self.position.y / CLIMB_FLIP_DISTANCE).floor() % 2.0 == 0.0;
+                if self.top_of_ladder {
+                    dq.sprite(&self.sprites.climb_end, params);
+                } else {
+                    dq.sprite(&self.sprites.climb, params);
+                }
+            }
+        }
+
+        dq
+    }
+
+    fn global_rect(&self) -> Rect {
+        self.collision_rect.translate(self.position)
+    }
+
+    fn on_ground(&self) -> bool {
+        self.on_ground_timer > 0.0
     }
 }

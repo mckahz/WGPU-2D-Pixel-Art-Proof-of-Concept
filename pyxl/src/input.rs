@@ -24,6 +24,7 @@ pub struct Input<'a> {
     pub left: Key<'a>,
     pub right: Key<'a>,
     pub down: Key<'a>,
+    pub up: Key<'a>,
     pub attack: Key<'a>,
 }
 
@@ -62,6 +63,7 @@ impl<'a> Input<'a> {
             &mut self.jump,
             &mut self.left,
             &mut self.right,
+            &mut self.up,
             &mut self.down,
             &mut self.attack,
         ] {
@@ -102,6 +104,11 @@ impl<'a> Default for Input<'a> {
             },
             right: Key {
                 mappings: (&[VirtualKeyCode::D], &[Button::DPadRight]),
+                just_changed: false,
+                pressed: false,
+            },
+            up: Key {
+                mappings: (&[VirtualKeyCode::W], &[Button::DPadUp]),
                 just_changed: false,
                 pressed: false,
             },

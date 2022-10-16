@@ -2,10 +2,12 @@ pub mod downscale;
 pub mod pixel_art;
 
 /*  TODO:
+T   collision
+T   camera
+T   tilemap import
+T   make flipping instance based
+T   make animation frame instance based
 F   wasm
-F   collision
-F   camera
-F   tilemap import
 F   alternating attacks
 F   palette swapping
 F   hold after attack
@@ -18,8 +20,6 @@ F   refactor attacking things out of Player
 F   player's double jump is a burst jump
 F   dashing
 F   allow specifying the size/rect of the sprite
-F   make flipping instance based
-F   make animation frame instance based
 F   maybe add resources handles?
 */
 use itertools::iproduct;
@@ -33,7 +33,12 @@ use wgpu::{util::DeviceExt, BindGroupEntry};
 
 use crate::{
     file_system::{self, LoadError},
-    graphics::pixel_art::{sprite::*, sprite_sheet::*, texture::*, tilemap::Tile},
+    graphics::pixel_art::{
+        sprite::*,
+        sprite_sheet::*,
+        texture::*,
+        tilemap::{ImageLayer, Tile},
+    },
     math::extend3d_to_uvec2,
 };
 use glam::*;
@@ -43,7 +48,7 @@ use self::{
     downscale::Downscale,
     pixel_art::{
         sprite_sheet::SpriteSheet,
-        tilemap::{GPUTileMap, TileInstance, TileLayer},
+        tilemap::{TileInstance, TileLayer, TileMap},
         Camera, PixelArt,
     },
 };
@@ -145,7 +150,7 @@ impl Renderer {
 
     pub const INDICES: [u16; 6] = [2, 1, 0, 1, 2, 3];
 
-    pub fn load_tilemap(&self, path: &str) -> Result<GPUTileMap, LoadError> {
+    pub fn load_tilemap(&self, path: &str) -> Result<TileMap, LoadError> {
         use crate::graphics::pixel_art::tilemap::Vertex;
 
         let path = &file_system::to_asset_path(path);
@@ -156,6 +161,7 @@ impl Renderer {
         };
 
         let mut tile_layers = HashMap::new();
+        let mut image_layers = HashMap::new();
 
         for layer in tmx.layers() {
             match layer.layer_type() {
@@ -279,12 +285,36 @@ impl Renderer {
                         },
                     );
                 }
+                tiled::LayerType::ImageLayer(image_layer) => {
+                    let sprite = self.load_sprite(
+                        Origin::TopLeft,
+                        &image_layer.image.as_ref().unwrap().source.to_str().unwrap()
+                            ["./assets".len()..],
+                    )?;
+
+                    image_layers.insert(
+                        layer.name.clone(),
+                        ImageLayer {
+                            sprite,
+                            repeat_x: match layer.properties.get("Repeat X") {
+                                Some(tiled::PropertyValue::BoolValue(b)) => *b,
+                                _ => false,
+                            },
+                            repeat_y: match layer.properties.get("Repeat Y") {
+                                Some(tiled::PropertyValue::BoolValue(b)) => *b,
+                                _ => false,
+                            },
+                            position: Vec2::new(layer.offset_x, layer.offset_y),
+                        },
+                    );
+                }
                 _ => {}
             }
         }
 
-        Ok(GPUTileMap {
+        Ok(TileMap {
             tile_layers,
+            image_layers,
             tile_width: tmx.tile_width,
             tile_height: tmx.tile_height,
         })
@@ -890,7 +920,48 @@ impl<'a> DrawQueue<'a> {
     }
 
     /// Tile layers may only be drawn once. Future draw calls on the same tile layer will be ignored.
-    pub fn tile_layer(&mut self, tile_layer: &'a TileLayer) {
-        self.0.push(DrawJob::TileLayer(tile_layer));
+    pub fn tile_layer(&mut self, tile_map: &'a TileMap, layer: &str) {
+        self.0
+            .push(DrawJob::TileLayer(tile_map.tile_layers.get(layer).unwrap()));
+    }
+
+    /// Tile layers may only be drawn once. Future draw calls on the same tile layer will be ignored.
+    pub fn tile_image(&mut self, tile_map: &'a TileMap, layer: &str) {
+        let image_layer = tile_map.image_layers.get(layer).unwrap();
+        let mut draw_spr = |offset| {
+            self.0.push(DrawJob::Sprite(
+                &image_layer.sprite,
+                DrawParams::from_pos(offset + image_layer.position),
+            ))
+        };
+        //TODO: make tile as long as necessary
+        let x_lim = 4;
+        let y_lim = 2;
+        if image_layer.repeat_x && image_layer.repeat_y {
+            for i in 0..x_lim {
+                for j in 0..y_lim {
+                    draw_spr(Vec2::new(
+                        (i * image_layer.sprite.texture.size.x) as f32,
+                        (j * image_layer.sprite.texture.size.y) as f32,
+                    ));
+                }
+            }
+        } else if image_layer.repeat_x {
+            for i in 0..x_lim {
+                draw_spr(Vec2::new(
+                    (i * image_layer.sprite.texture.size.x) as f32,
+                    0.0,
+                ));
+            }
+        } else if image_layer.repeat_y {
+            for i in 0..y_lim {
+                draw_spr(Vec2::new(
+                    0.0,
+                    (i * image_layer.sprite.texture.size.y) as f32,
+                ));
+            }
+        } else {
+            draw_spr(Vec2::ZERO);
+        }
     }
 }

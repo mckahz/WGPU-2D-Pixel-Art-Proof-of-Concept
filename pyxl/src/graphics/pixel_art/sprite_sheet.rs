@@ -146,3 +146,48 @@ impl SpriteSheetData {
         }
     }
 }
+
+pub struct AnimationTime {
+    t: f32,
+    frame: u8,
+    current_frame_duration: f32,
+    frame_rate: FrameRate,
+    max: u8,
+}
+
+impl AnimationTime {
+    pub fn current_frame_duration(&self) -> f32 {
+        match &self.frame_rate {
+            FrameRate::Constant(frame_duration) => *frame_duration,
+            FrameRate::Variable(frame_durations) => frame_durations[self.frame as usize],
+            FrameRate::None => 0.0,
+        }
+    }
+
+    pub fn new(sprite_sheet: &SpriteSheet) -> Self {
+        let mut inst = Self {
+            t: 0.0,
+            frame: 0,
+            frame_rate: sprite_sheet.frame_rate.clone(),
+            current_frame_duration: 0.0,
+            max: sprite_sheet.count,
+        };
+        inst.current_frame_duration = inst.current_frame_duration();
+        inst
+    }
+
+    //TODO: make this return u8, or make SpriteSheet.count a u32
+    pub fn frame(&self) -> u32 {
+        self.frame as u32
+    }
+
+    pub fn advance(&mut self, delta: f32) {
+        self.t += delta;
+
+        let cfd = self.current_frame_duration();
+        if self.t > cfd {
+            self.t %= cfd;
+            self.frame = (self.frame + 1) % self.max;
+        }
+    }
+}

@@ -3,13 +3,23 @@
 
 use std::collections::HashMap;
 
-use super::texture::GPUTexture;
+use glam::Vec2;
+
+use super::{sprite::Sprite, texture::GPUTexture};
 
 /// Describes a tilemap, along with it's tilesets and textures. Can be used to render tiled exports.
-pub struct GPUTileMap {
+pub struct TileMap {
     pub tile_width: u32,
     pub tile_height: u32,
     pub tile_layers: HashMap<String, TileLayer>,
+    pub image_layers: HashMap<String, ImageLayer>,
+}
+
+pub struct ImageLayer {
+    pub position: Vec2,
+    pub sprite: Sprite,
+    pub repeat_x: bool,
+    pub repeat_y: bool,
 }
 
 pub struct TileLayer {
