@@ -49,7 +49,7 @@ pub struct Game {
     pub boss: Boss,
     pub ui: Ui,
     pub environment: Environment,
-    pub tile_map: GPUTileMap,
+    pub tile_map: TileMap,
     pub level_geometry: LevelGeometry,
 }
 
@@ -60,7 +60,47 @@ pub struct Environment {
 }
 
 pub struct LevelGeometry {
-    pub rectangles: Vec<Rect>,
+    pub blocks: Vec<Rect>,
+    pub ladders: Vec<Rect>,
+    pub top_ladders: Vec<Rect>,
+}
+
+impl LevelGeometry {
+    pub fn colliding(&self, rect: Rect) -> bool {
+        self.blocks.iter().any(|r| r.contains(&rect))
+    }
+
+    pub fn ladder_colliding(&self, rect: Rect) -> bool {
+        self.ladders.iter().any(|r| r.contains(&rect))
+    }
+
+    pub fn top_ladder_colliding(&self, rect: Rect) -> bool {
+        self.top_ladders.iter().any(|r| r.contains(&rect))
+    }
+
+    pub fn collisions(&self, rect: Rect) -> Vec<Rect> {
+        self.blocks
+            .iter()
+            .filter(|r| r.contains(&rect))
+            .map(|r| *r)
+            .collect()
+    }
+
+    pub fn ladder_collisions(&self, rect: Rect) -> Vec<Rect> {
+        self.ladders
+            .iter()
+            .filter(|r| r.contains(&rect))
+            .map(|r| *r)
+            .collect()
+    }
+
+    pub fn top_ladder_collisions(&self, rect: Rect) -> Vec<Rect> {
+        self.top_ladders
+            .iter()
+            .filter(|r| r.contains(&rect))
+            .map(|r| *r)
+            .collect()
+    }
 }
 
 pub const CAMERA_WIDTH: u32 = 427;
@@ -123,20 +163,55 @@ impl Game {
 
         let tile_map = r.load_tilemap("tiles/untitled.tmx")?;
 
+        let blocks = tile_map
+            .tile_layers
+            .get("Inter")
+            .unwrap()
+            .tiles
+            .iter()
+            .map(|Tile { x, y, .. }| Rect {
+                x: (tile_map.tile_width as i32 * (*x)) as f32,
+                y: (tile_map.tile_height as i32 * (*y)) as f32,
+                w: (tile_map.tile_width) as f32,
+                h: (tile_map.tile_height) as f32,
+            })
+            .collect();
+        let ladder_width = 8.0;
+        let ladder_tiles = &tile_map.tile_layers.get("Ladders").unwrap().tiles;
+        let ladders: Vec<Rect> = ladder_tiles
+            .iter()
+            .map(|Tile { x, y, .. }| Rect {
+                x: (tile_map.tile_width as f32) * (*x as f32 + 0.5) - ladder_width / 2.0,
+                y: (tile_map.tile_height as i32 * (*y)) as f32,
+                w: ladder_width,
+                h: (tile_map.tile_height) as f32,
+            })
+            .collect();
+
+        //TODO: this won't work for ladders on the same axis
+        let top_ladders = ladder_tiles
+            .iter()
+            .enumerate()
+            .filter(|(i, ladder_tile)| {
+                if *i == 0 {
+                    true
+                } else {
+                    let prev_tile = ladder_tiles.get(i - 1).unwrap();
+                    prev_tile.y + 1 != ladder_tile.y || prev_tile.x != ladder_tile.x
+                }
+            })
+            .map(|(_, Tile { x, y, .. })| Rect {
+                x: (tile_map.tile_width as i32 * x) as f32,
+                y: (tile_map.tile_height as i32 * y) as f32,
+                w: (tile_map.tile_width) as f32,
+                h: (tile_map.tile_height) as f32,
+            })
+            .collect();
+
         let level_geometry = LevelGeometry {
-            rectangles: tile_map
-                .tile_layers
-                .get("Inter")
-                .unwrap()
-                .tiles
-                .iter()
-                .map(|Tile { x, y, .. }| Rect {
-                    x: (tile_map.tile_width as i32 * (*x)) as f32,
-                    y: (tile_map.tile_height as i32 * (*y)) as f32,
-                    w: (tile_map.tile_width) as f32,
-                    h: (tile_map.tile_height) as f32,
-                })
-                .collect(),
+            blocks,
+            ladders,
+            top_ladders,
         };
 
         Ok(Self {
@@ -156,11 +231,11 @@ impl Game {
     pub fn input(&mut self) {}
 
     pub fn update(&mut self, input: &Input, delta: f32) {
-        self.renderer.update_camera(
-            self.player.data.position - UVec2::new(CAMERA_WIDTH / 2, CAMERA_HEIGHT / 2).as_vec2(),
-        );
-
         self.player.update(delta, input, &self.level_geometry);
+
+        self.renderer.update_camera(
+            self.player.position - UVec2::new(CAMERA_WIDTH / 2, CAMERA_HEIGHT / 2).as_vec2(),
+        );
     }
 
     pub fn draw(&mut self) {
@@ -173,11 +248,17 @@ impl Game {
                 DrawParams::from_pos(Vec2::new(320.0, 59.0)),
             );
             dq.sprite(&self.environment.clouds, DrawParams::default());
-            /*
-            dq.sprite(&self.environment.platforms, DrawParams::default());
-            */
 
-            dq.tile_layer(self.tile_map.tile_layers.get("Inter").unwrap());
+            dq.tile_layer(&self.tile_map, "Backing");
+            dq.tile_image(&self.tile_map, "Clouds");
+            dq.tile_image(&self.tile_map, "Moon");
+            dq.tile_layer(&self.tile_map, "Mountains");
+            dq.tile_layer(&self.tile_map, "Cave");
+            dq.tile_layer(&self.tile_map, "Graves");
+            dq.tile_layer(&self.tile_map, "Inter");
+            dq.tile_layer(&self.tile_map, "Spikes");
+            dq.tile_layer(&self.tile_map, "Ladders");
+            dq.tile_layer(&self.tile_map, "Decorate");
         }
 
         // DRAW CHARACTERS
@@ -239,15 +320,15 @@ impl Game {
             let heart_x = 11.0 + player_base_x;
             let heart_y = 19.0 + player_base_y;
             let heart_spacing = 21.0;
-            for i in 0..self.player.data.health / 2 {
+            for i in 0..self.player.health / 2 {
                 dq.sprite(
                     &self.ui.player_heart_full,
                     DrawParams::from_pos(Vec2::new(heart_x + heart_spacing * (i as f32), heart_y))
                         .ui(true),
                 );
             }
-            if self.player.data.health % 2 == 1 {
-                let x = heart_x + heart_spacing * (self.player.data.health / 2) as f32;
+            if self.player.health % 2 == 1 {
+                let x = heart_x + heart_spacing * (self.player.health / 2) as f32;
                 dq.sprite(
                     &self.ui.player_heart_half,
                     DrawParams::from_pos(Vec2::new(x, heart_y)).ui(true),

@@ -3,7 +3,7 @@ use std::ops::{Add, Sub};
 use glam::{UVec2, Vec2};
 use wgpu::Extent3d;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rectangle<T> {
     pub x: T,
     pub y: T,
@@ -14,7 +14,7 @@ pub type Rect = Rectangle<f32>;
 
 impl<T> Rectangle<T>
 where
-    T: Add<Output = T> + Copy + Sub<Output = T> + PartialOrd,
+    T: Add<Output = T> + Copy + Sub<Output = T> + PartialOrd + PartialEq,
 {
     pub fn right(&self) -> T {
         self.x + self.w
@@ -39,18 +39,33 @@ where
     }
 
     pub fn contains(&self, other: &Self) -> bool {
-        !(self.right() < other.left()
-            || self.left() > other.right()
-            || self.top() > other.bottom()
-            || self.bottom() < other.top())
+        !(self.right() <= other.left()
+            || self.left() >= other.right()
+            || self.top() >= other.bottom()
+            || self.bottom() <= other.top())
     }
 }
 
 impl Rect {
-    pub fn translate(&self, other: Vec2) -> Self {
+    pub fn translate(&self, offset: Vec2) -> Self {
         Self {
-            x: self.x + other.x,
-            y: self.y + other.y,
+            x: self.x + offset.x,
+            y: self.y + offset.y,
+            ..*self
+        }
+    }
+
+    pub fn translate_x(&self, offset: f32) -> Self {
+        Self {
+            x: self.x + offset,
+            y: self.y,
+            ..*self
+        }
+    }
+    pub fn translate_y(&self, offset: f32) -> Self {
+        Self {
+            x: self.x,
+            y: self.y + offset,
             ..*self
         }
     }
