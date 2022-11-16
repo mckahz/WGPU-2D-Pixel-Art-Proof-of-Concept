@@ -4,9 +4,18 @@ name = "cowboy_dot_exe"
 version = "0.1.0"
 
 [dependencies]
-pyxl = { path = "pyxl"}
 pollster = "0.2"
 env_logger = "0.9"
-winit = "0.26"
 glam = "0.21"
 gilrs = "0.9.0"
+wgpu = "0.14.0"
+bytemuck = { version = "1.12.3", features = [ "derive" ] }
+itertools = "0.10.5"
+tiled = "0.10.2"
+winit = "0.27.5"
+
+
+[dependencies.image]
+version = "0.24"
+default-features = false
+features = ["png", "jpeg"]

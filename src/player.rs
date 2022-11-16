@@ -2,7 +2,7 @@
 
 use glam::Vec2;
 
-use pyxl::{
+use crate::{
     file_system::LoadError,
     graphics::{
         pixel_art::{sprite::*, sprite_sheet::*},
@@ -12,7 +12,7 @@ use pyxl::{
     math::{Rect, Rectangle},
 };
 
-use crate::game::LevelGeometry;
+use crate::LevelGeometry;
 
 pub struct Sprites {
     pub idle: Sprite,
